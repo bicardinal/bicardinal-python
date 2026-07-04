@@ -190,6 +190,21 @@ for hit in col.search_in_file("payment terms", "contract.pdf", k=5):
     print(hit.chunk_index, hit.raw_text[:120])
 ```
 
+### Read a document's chunks directly
+
+Use this when you want a file's content in order, rather than the passages that
+match a query. Useful for displaying a document, or paging through it.
+
+```python
+# All chunks of one file, in order
+for c in col.read_chunks("report.pdf"):
+    print(c.chunk_index, c.raw_text[:120])
+
+# Page through a long file
+first_page = col.read_chunks("report.pdf", start=0, limit=20)
+next_page = col.read_chunks("report.pdf", start=20, limit=20)
+```
+
 ### Rank whole files by relevance
 
 Use this to find which documents are most about a topic, rather than which
@@ -271,7 +286,7 @@ Public names are importable from the top level package:
 ```python
 from bicardinal import (
     Bicardinal, Collection, Config, CollectionStatus,
-    AddResult, SearchHit, FileHit, Usage, Modality,
+    AddResult, SearchHit, FileHit, Chunk, Usage, Modality,
     BicardinalError, DuplicateDocument, DocumentNotFound,
     CollectionExists, CollectionNotFound, UnsupportedFileType,
     EmptyFile, ExtractionError,
@@ -440,6 +455,31 @@ Rank whole files by how well their best passage matches the query.
 Returns a list of [`FileHit`](#filehit), best file first. Returns an empty list
 if nothing has been finalized yet.
 
+#### read_chunks
+
+```python
+read_chunks(filename, *, start=0, limit=None) -> list[Chunk]
+```
+
+Read a file's stored chunks directly, in order, without a search query. Use this
+when you want the document's content as it was chunked, rather than the passages
+that match some query.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `filename` | str | required | The file whose chunks to read. |
+| `start` | int | `0` | Index of the first chunk to return. Offsets into the ordered list. |
+| `limit` | int or None | `None` | Maximum number of chunks to return. `None` returns all remaining. |
+
+Returns a list of [`Chunk`](#chunk), ordered by `chunk_index` starting at 0.
+Raises `DocumentNotFound` if the file is not in the collection. A registered file
+that produced no chunks (for example a whitespace only file) returns an empty
+list rather than raising.
+
+`start` and `limit` follow normal slicing: a `start` past the end returns an
+empty list, and a `limit` larger than the number of remaining chunks returns
+whatever is left.
+
 #### status
 
 ```python
@@ -574,6 +614,20 @@ Returned by `most_similar_files`.
 | `score` | float | Distance of the file's best chunk. Smaller is closer. |
 | `best_chunk` | SearchHit | The best matching chunk in the file. |
 
+#### Chunk
+
+Returned by `read_chunks`. Like a `SearchHit` without a score, since reading
+chunks is not a query and has no distance.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `chunk_id` | str | Identifier of the chunk. |
+| `filename` | str | File the chunk came from. |
+| `chunk_index` | int | Position of the chunk within the file, starting at 0. |
+| `raw_text` | str | Original chunk text. |
+| `description` | str | Generated description that was embedded. |
+
+
 #### CollectionStatus
 
 Returned by `status`.
@@ -654,6 +708,9 @@ start adding files. `n_jobs` can be changed at any time, including per call to
 - A file whose extracted content is empty or only whitespace is registered with
   zero chunks. It appears in `status().filenames` but produces no search
   results.
+- `read_chunks` returns a file's chunks in `chunk_index` order without running a
+  search. It raises `DocumentNotFound` for an unknown file, but returns an empty
+  list for a registered file that has no chunks.
 - Requesting more results than exist is safe. You receive at most as many
   results as there are chunks.
 - Scores are distances. Sort ascending and treat the first result as the best

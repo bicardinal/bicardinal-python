@@ -13,6 +13,7 @@ from .office.pipeline import build_chunks
 from .office.types import AddResult
 from .office.types import FileHit
 from .office.types import SearchHit
+from .office.types import Chunk
 from .services.embedder import Embedder
 from .services.summarizer import Summarizer
 from .store.catalog import Catalog
@@ -243,6 +244,32 @@ class Collection:
         self._catalog.delete_file(
             filename
         )  # catalog last: file stays consistent until purge completes
+
+    def read_chunks(
+        self,
+        filename: str,
+        *,
+        start: int = 0,
+        limit: int | None = None,
+    ) -> list[Chunk]:
+        if not self._catalog.has_file(filename):
+            raise DocumentNotFound(filename)
+        ids = self._catalog.get_ids(filename)
+        records = self._payload.get(ids)
+        chunks = [
+            Chunk(
+                chunk_id=cid,
+                filename=rec.filename,
+                chunk_index=rec.chunk_index,
+                raw_text=rec.raw_text,
+                description=rec.description,
+            )
+            for cid, rec in zip(ids, records)
+            if rec is not None
+        ]
+        chunks.sort(key=lambda c: c.chunk_index)
+        stop = None if limit is None else start + limit
+        return chunks[start:stop]
 
     def close(self) -> None:
         self._index.close()

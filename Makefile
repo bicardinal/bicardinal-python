@@ -1,4 +1,4 @@
-.PHONY: help install dev clean format pybuild upload-pypi
+.PHONY: help install dev clean format pybuild upload-pypi test
 
 PYTHON := python3
 
@@ -11,6 +11,7 @@ help:
 	@echo "  make format       - Format code content"
 	@echo "  make upload-pypi  - Update pypi package"
 	@echo "  make pybuild      - Python build"
+	@echo "  make test         - Test"
 
 install:
 	pip install -e .
@@ -44,3 +45,6 @@ upload-testpypi:
 
 upload-pypi:
 	python -m twine upload dist/* --verbose
+
+test:
+	pytest .

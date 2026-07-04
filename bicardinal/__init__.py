@@ -28,6 +28,7 @@ from .office.types import AddResult
 from .office.types import FileHit
 from .office.types import Modality
 from .office.types import SearchHit
+from .office.types import Chunk
 from .office.types import Usage
 from .services.embedder import make_embedder
 from .services.summarizer import Summarizer
@@ -148,6 +149,7 @@ __all__ = [
     "AddResult",
     "SearchHit",
     "FileHit",
+    "Chunk",
     "Usage",
     "Modality",
     "BicardinalError",

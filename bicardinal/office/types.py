@@ -16,7 +16,7 @@ class Modality(str, Enum):
 @dataclass
 class ChunkRecord:
     raw_text: str
-    description: str  # the text we actually embed
+    description: str # the text we actually embed
     filename: str
     chunk_index: int
 
@@ -28,13 +28,20 @@ class SearchHit:
     chunk_index: int
     raw_text: str
     description: str
-    score: float  # brinicle distance; smaller = closer
+    score: float # brinicle distance; smaller = closer
 
+@dataclass
+class Chunk:
+    chunk_id: str
+    filename: str
+    chunk_index: int
+    raw_text: str
+    description: str
 
 @dataclass
 class FileHit:
     filename: str
-    score: float  # distance of the file's best (min-distance) chunk
+    score: float # distance of the file's best (min-distance) chunk
     best_chunk: SearchHit
 
 

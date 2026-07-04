@@ -307,3 +307,92 @@ def test_summarizer_failures_fall_back_to_raw_text(tmp_path, monkeypatch):
     hits = col.search("birds and coastal marshes", k=3)
     assert hits and hits[0].filename == "birds.txt"
     col.close()
+
+# --- reading chunks
+
+
+def test_read_chunks_returns_all_in_order(store):
+    col = store.create("read_all")
+    col.init("build")
+    body = " ".join(
+        f"Sentence {i} about coral reefs, marine biology, and ocean currents."
+        for i in range(60)
+    )
+    res = col.ingest("reef.txt", body.encode())
+    col.finalize()
+    assert res.n_chunks > 1, "need multiple chunks to test ordering"
+
+    chunks = col.read_chunks("reef.txt")
+    assert len(chunks) == res.n_chunks
+    assert [c.chunk_index for c in chunks] == list(range(res.n_chunks))
+    assert all(c.filename == "reef.txt" for c in chunks)
+    assert all(c.raw_text for c in chunks)
+    assert all(c.chunk_id.startswith("ch_") for c in chunks)
+
+    col.close()
+
+
+def test_read_chunks_pagination(store):
+    col = store.create("read_page")
+    col.init("build")
+    body = " ".join(
+        f"Fact {i}: migratory birds depend on coastal wetlands and marshes."
+        for i in range(60)
+    )
+    res = col.ingest("birds.txt", body.encode())
+    col.finalize()
+    assert res.n_chunks >= 4, "need enough chunks to slice"
+
+    everything = col.read_chunks("birds.txt")
+
+    tail = col.read_chunks("birds.txt", start=2)
+    assert [c.chunk_index for c in tail] == [c.chunk_index for c in everything[2:]]
+
+    head = col.read_chunks("birds.txt", limit=2)
+    assert [c.chunk_index for c in head] == [0, 1]
+
+    window = col.read_chunks("birds.txt", start=1, limit=2)
+    assert [c.chunk_index for c in window] == [1, 2]
+
+    assert col.read_chunks("birds.txt", start=10_000) == []
+    assert len(col.read_chunks("birds.txt", start=2, limit=10_000)) == res.n_chunks - 2
+
+    col.close()
+
+
+def test_read_chunks_missing_file_raises(store):
+    col = store.create("read_missing")
+    col.init("build")
+    col.ingest("real.txt", b"a real document about lighthouses and the sea")
+    col.finalize()
+    with pytest.raises(bicardinal.DocumentNotFound):
+        col.read_chunks("ghost.txt")
+
+
+def test_read_chunks_zero_chunk_file_is_empty(store):
+    col = store.create("read_blank")
+    col.init("build")
+    col.ingest("blank.txt", b"   \n\t  \r\n   ")
+    col.finalize()
+    assert col.read_chunks("blank.txt") == []
+
+
+def test_read_chunks_matches_search_hit_content(store):
+    col = store.create("read_vs_search")
+    col.init("build")
+    col.ingest("reef.txt", b"the exact same sentence about coral reefs and marine biology")
+    col.finalize()
+
+    chunks = col.read_chunks("reef.txt")
+    assert chunks
+    hits = col.search_in_file("coral reefs", "reef.txt", k=len(chunks))
+    assert hits
+    by_id = {c.chunk_id: c for c in chunks}
+    for h in hits:
+        assert h.chunk_id in by_id
+        c = by_id[h.chunk_id]
+        assert c.raw_text == h.raw_text
+        assert c.description == h.description
+        assert c.chunk_index == h.chunk_index
+
+    col.close()

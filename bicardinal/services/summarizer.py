@@ -30,7 +30,7 @@ class Summarizer:
         model: str = "gpt-5.4-nano",
         *,
         max_concurrency: int = 8,
-        reasoning_effort: str = "minimal",
+        reasoning_effort: str = "low",
     ) -> None:
         self._client = client
         self._model = model
@@ -73,10 +73,10 @@ class Summarizer:
                     descriptions[i] = d
                     usage = usage + u
                 except Exception as e:
-                    descriptions[i] = chunks[i]  # fall back to raw text
+                    descriptions[i] = chunks[i] # fall back to raw text
                     errors.append((i, e))
                 done += 1
                 if on_tick is not None:
                     on_tick(done, n)
-        errors.sort()  # by index; completion order is arbitrary
+        errors.sort() # by index; completion order is arbitrary
         return descriptions, usage, errors

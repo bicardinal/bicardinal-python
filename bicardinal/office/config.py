@@ -33,7 +33,7 @@ class Config:
     # summarizer
     summarizer_model: str = DEFAULT_SUMMARIZER_MODEL
     summarizer_max_concurrency: int = 8
-    summarizer_reasoning_effort: str = "minimal"
+    summarizer_reasoning_effort: str = "low"
 
     # index (HNSW)
     M: int = 16
