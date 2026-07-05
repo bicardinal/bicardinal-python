@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-
+import numpy as np
 from .extractors.router import Router
 from .office.config import Config
 from .office.exceptions import DocumentNotFound
@@ -15,6 +15,7 @@ from .office.types import FileHit
 from .office.types import SearchHit
 from .office.types import Chunk
 from .services.embedder import Embedder
+from .services.embedder import fuse_query
 from .services.summarizer import Summarizer
 from .store.catalog import Catalog
 from .store.index import Index
@@ -51,14 +52,19 @@ class Collection:
         self._embedder = embedder
         self._summarizer = summarizer
         self._router = router
+
+        self._dual_encoding = config.dual_encoding
+        self._fusion_weight = config.fusion_weight
+        vector_dim = embedder.dim * 2 if config.dual_encoding else embedder.dim
         self._index = Index(
             self._path / "index",
-            embedder.dim,
+            vector_dim,
             M=config.M,
             ef_construction=config.ef_construction,
             ef_search=config.efs,
             build_n_threads=config.build_n_threads,
         )
+
         self._payload = PayloadStore(
             self._path / "payload", shard_count=config.shard_count
         )
@@ -97,8 +103,17 @@ class Collection:
             )
         return out
 
+    def _embed_query(self, query: str, fusion_weight: float | None) -> np.ndarray:
+        qvec = self._embedder.embed_query(query)
+        if not self._dual_encoding:
+            return qvec
+        # if not (0 >= fusion_weight <= 1.0):
+        #     raise ValueError("fusion_weight should be within 0-1 range.")
+        w = fusion_weight if fusion_weight is not None else self._fusion_weight
+        return fuse_query(qvec, w)
+
     def init(self, mode: str = "insert") -> None:
-        self._index.init(mode)  # open for staging: build | insert | upsert
+        self._index.init(mode) # open for staging: build | insert | upsert
 
     def ingest(
         self,
@@ -157,13 +172,14 @@ class Collection:
         *,
         n_jobs: int | None = None,
         efs: int | None = None,
+        fusion_weight: float | None = None,
     ) -> list[SearchHit]:
         if not self._catalog.get_files():
-            return []  # nothing finalized yet; engine would raise
+            return []
         k = k if k is not None else self._config.default_k
         n_jobs = n_jobs if n_jobs is not None else self._config.n_jobs
         efs = efs if efs is not None else self._config.efs
-        qvec = self._embedder.embed_query(query)
+        qvec = self._embed_query(query, fusion_weight)
         hits = self._index.search_with_distance(qvec, k, n_jobs=n_jobs, efs=efs)
         return self._project(hits)
 
@@ -176,13 +192,14 @@ class Collection:
         n_jobs: int | None = None,
         efs: int | None = None,
         exact: bool = True,
+        fusion_weight: float | None = None,
     ) -> list[SearchHit]:
         if not self._catalog.has_file(filename):
             raise DocumentNotFound(filename)
         k = k if k is not None else self._config.default_k
         n_jobs = n_jobs if n_jobs is not None else self._config.n_jobs
         efs = efs if efs is not None else self._config.efs
-        qvec = self._embedder.embed_query(query)
+        qvec = self._embed_query(query, fusion_weight)
         hits = self._index.search_with_distance(
             qvec,
             k,
@@ -195,7 +212,7 @@ class Collection:
         if exact:
             results = [
                 h for h in results if h.filename == filename
-            ]  # drop category hash-collisions
+            ] # drop category hash-collisions
         return results
 
     def most_similar_files(
@@ -206,13 +223,14 @@ class Collection:
         candidate_k: int = 100,
         n_jobs: int | None = None,
         efs: int | None = None,
+        fusion_weight: float | None = None,
     ) -> list[FileHit]:
         if not self._catalog.get_files():
-            return []  # nothing finalized yet
+            return []
         k = k if k is not None else self._config.default_k
         n_jobs = n_jobs if n_jobs is not None else self._config.n_jobs
         efs = efs if efs is not None else self._config.efs
-        qvec = self._embedder.embed_query(query)
+        qvec = self._embed_query(query, fusion_weight)
         hits = self._index.search_with_distance(
             qvec, candidate_k, n_jobs=n_jobs, efs=efs
         )

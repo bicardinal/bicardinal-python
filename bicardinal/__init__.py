@@ -79,6 +79,9 @@ class Bicardinal:
             self._config.summarizer_model,
             max_concurrency=self._config.summarizer_max_concurrency,
             reasoning_effort=self._config.summarizer_reasoning_effort,
+            use_flex=self._config.summarizer_use_flex,
+            flex_max_retries=self._config.summarizer_flex_max_retries,
+            flex_backoff=self._config.summarizer_flex_backoff,
         )
         self._router = Router(
             {
@@ -132,9 +135,13 @@ class Bicardinal:
         path = self._collection_path(name)
         if not self._is_collection(path):
             raise CollectionNotFound(name)
-        col = self._build_collection(path)
-        col.destroy()  # clear brinicle stores
-        shutil.rmtree(path, ignore_errors=True)  # remove the now-empty directory
+        try:
+            col = self._build_collection(path) # when the config changes, we cannot open the index, raises an error.
+        except Exception:
+            shutil.rmtree(path, ignore_errors=True)
+            return
+        col.destroy()
+        shutil.rmtree(path, ignore_errors=True)
 
     def destroy(self) -> None:
         for name in self.list():  # snapshot first, then mutate the filesystem

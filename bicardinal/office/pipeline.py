@@ -9,6 +9,7 @@ import numpy as np
 from ..extractors.router import Router
 from ..services.chunking import chunk_text
 from ..services.embedder import Embedder
+from ..services.embedder import fuse_documents
 from ..services.summarizer import Summarizer
 from .config import Config
 from .types import ChunkRecord
@@ -73,10 +74,16 @@ def build_chunks(
         usage = usage + desc_usage
         errors = [f"chunk {i}: {type(e).__name__}: {e}" for i, e in desc_errors]
 
+    index_dim = embedder.dim * 2 if config.dual_encoding else embedder.dim
     if raw_texts:
-        vectors = embedder.embed_documents(descriptions)  # embed the DESCRIPTION
+        desc_vecs = embedder.embed_documents(descriptions)  # embed the DESCRIPTION
+        if config.dual_encoding:  # also embed raw text; store both as one vector
+            raw_vecs = embedder.embed_documents(raw_texts) # later we can use a different model here.
+            vectors = fuse_documents(desc_vecs, raw_vecs)
+        else:
+            vectors = desc_vecs
     else:
-        vectors = np.empty((0, embedder.dim), dtype=np.float32)
+        vectors = np.empty((0, index_dim), dtype=np.float32)
     progress("embed", len(raw_texts), len(raw_texts))
 
     chunk_ids = [chunk_id_for(filename, i, raw_texts[i]) for i in range(len(raw_texts))]

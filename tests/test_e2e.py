@@ -396,3 +396,91 @@ def test_read_chunks_matches_search_hit_content(store):
         assert c.chunk_index == h.chunk_index
 
     col.close()
+
+
+# dual encoding
+
+
+def _dual_store(tmp_path, monkeypatch, **overrides):
+    monkeypatch.setattr(bicardinal, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(bicardinal, "Mistral", FakeMistral)
+    config = Config(chunk_size=128, overlap=0.1, dual_encoding=True, **overrides)
+    return Bicardinal(
+        tmp_path / "data",
+        config=config,
+        openai_api_key="test",
+        mistral_api_key="test",
+    )
+
+
+def test_dual_encoding_ingest_search_and_reopen(tmp_path, monkeypatch):
+    store = _dual_store(tmp_path, monkeypatch)
+    col = store.create("dual")
+    col.init("build")
+    col.ingest(
+        "cats.txt", b"Cats are small domesticated felines that purr and chase mice."
+    )
+    col.ingest(
+        "finance.txt", b"Quarterly revenue grew as the company cut operating costs."
+    )
+    assert col.finalize() == {}
+
+    assert col._index._vector_dim == col._embedder.dim * 2
+
+    hits = col.search("a pet animal that meows", k=2)
+    assert hits and hits[0].filename == "cats.txt"
+
+    for w in (0.0, 0.5, 1.0):
+        assert col.search("a pet animal that meows", k=1, fusion_weight=w)
+
+    col.close()
+
+    reopened = _dual_store(tmp_path, monkeypatch).open("dual")
+    assert reopened._index._vector_dim == reopened._embedder.dim * 2
+    hits = reopened.search("quarterly earnings and revenue", k=1)
+    assert hits and hits[0].filename == "finance.txt"
+    reopened.close()
+
+
+def test_dual_encoding_fusion_weight_routes_between_raw_and_description(
+    tmp_path, monkeypatch
+):
+    CAT = "A small domesticated feline pet that purrs and chases mice."
+    FIN = "Quarterly corporate revenue, earnings, dividends and operating costs."
+
+    class SwapResponses:
+        def create(self, *, model, instructions=None, input, **kw):
+            text = input[0] if isinstance(input, list) else str(input)
+            raw = text.removeprefix("CONTEXT: ").strip()
+            desc = FIN if ("feline" in raw or "purr" in raw) else CAT
+            return _Resp(desc)  # describe each chunk as its opposite topic
+
+    class SwapOpenAI:
+        def __init__(self, *a, **kw):
+            self.responses = SwapResponses()
+            self.audio = FakeOpenAI().audio
+
+    monkeypatch.setattr(bicardinal, "OpenAI", SwapOpenAI)
+    monkeypatch.setattr(bicardinal, "Mistral", FakeMistral)
+    store = Bicardinal(
+        tmp_path / "data",
+        config=Config(chunk_size=128, overlap=0.1, dual_encoding=True),
+        openai_api_key="test",
+        mistral_api_key="test",
+    )
+    col = store.create("swap")
+    col.init("build")
+    col.ingest("petraw.txt", CAT.encode())
+    col.ingest("finraw.txt", FIN.encode())
+    assert col.finalize() == {}
+
+    q = "a pet animal that meows"
+
+    raw_only = col.search(q, k=2, fusion_weight=0.0)
+    assert raw_only and raw_only[0].filename == "petraw.txt"
+
+    desc_only = col.search(q, k=2, fusion_weight=1.0)
+    assert desc_only and desc_only[0].filename == "finraw.txt"
+
+    assert raw_only[0].filename != desc_only[0].filename
+    col.close()

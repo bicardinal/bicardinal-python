@@ -24,6 +24,7 @@ not write extraction, chunking, embedding, or indexing code yourself.
   - [Config](#config)
   - [Result types](#result-types)
   - [Exceptions](#exceptions)
+- [Dual encoding](#dual-encoding)
 - [Behavior notes](#behavior-notes)
 
 ## How it works
@@ -44,6 +45,10 @@ When you add a file, bicardinal runs these steps:
 One detail matters when reading results: the vector is built from the generated
 description, not from the raw text. Search therefore matches the meaning of each
 chunk. The original text is still kept and returned to you for display.
+
+By default that vector comes only from the description. You can instead enable dual
+encoding, which embeds both the raw text and the description and stores them together
+so search can match either. See [Dual encoding](#dual-encoding).
 
 Search reverses the path. Your query is embedded and compared against the stored
 vectors. You get back the closest chunks, each with its file name, position,
@@ -401,7 +406,7 @@ stored after retries.
 #### search
 
 ```python
-search(query, k=None, *, n_jobs=None, efs=None) -> list[SearchHit]
+search(query, k=None, *, n_jobs=None, efs=None, fusion_weight=None) -> list[SearchHit]
 ```
 
 Search across every file in the collection.
@@ -412,6 +417,7 @@ Search across every file in the collection.
 | `k` | int or None | `None` | Maximum number of results. Falls back to `Config.default_k` (10). |
 | `n_jobs` | int or None | `None` | Parallel workers for the search. Falls back to `Config.n_jobs`. |
 | `efs` | int or None | `None` | Search breadth for this query. Higher can improve recall at the cost of speed. Falls back to `Config.efs`. |
+| `fusion_weight` | float or None | `None` | Only used on dual-encoded collections. Weight on the description half for this query; the raw text half gets the rest. Falls back to `Config.fusion_weight`. |
 
 Returns a list of [`SearchHit`](#searchhit), closest first. Returns an empty list
 if nothing has been finalized yet.
@@ -419,7 +425,7 @@ if nothing has been finalized yet.
 #### search_in_file
 
 ```python
-search_in_file(query, filename, k=None, *, n_jobs=None, efs=None, exact=True) -> list[SearchHit]
+search_in_file(query, filename, k=None, *, n_jobs=None, efs=None, exact=True, fusion_weight=None) -> list[SearchHit]
 ```
 
 Search only within one file.
@@ -432,6 +438,7 @@ Search only within one file.
 | `n_jobs` | int or None | `None` | Parallel workers. Falls back to `Config.n_jobs`. |
 | `efs` | int or None | `None` | Search breadth. Falls back to `Config.efs`. |
 | `exact` | bool | `True` | Keep only results that belong to `filename`. Leave this on unless you have a reason to change it. |
+| `fusion_weight` | float or None | `None` | Only used on dual-encoded collections. Weight on the description half for this query. Falls back to `Config.fusion_weight`. |
 
 Returns a list of [`SearchHit`](#searchhit). Raises `DocumentNotFound` if the
 file is not in the collection.
@@ -439,7 +446,7 @@ file is not in the collection.
 #### most_similar_files
 
 ```python
-most_similar_files(query, k=None, *, candidate_k=100, n_jobs=None, efs=None) -> list[FileHit]
+most_similar_files(query, k=None, *, candidate_k=100, n_jobs=None, efs=None, fusion_weight=None) -> list[FileHit]
 ```
 
 Rank whole files by how well their best passage matches the query.
@@ -451,6 +458,7 @@ Rank whole files by how well their best passage matches the query.
 | `candidate_k` | int | `100` | How many passages to consider before grouping them by file. Raise it if you have many files and want wider coverage. |
 | `n_jobs` | int or None | `None` | Parallel workers. Falls back to `Config.n_jobs`. |
 | `efs` | int or None | `None` | Search breadth. Falls back to `Config.efs`. |
+| `fusion_weight` | float or None | `None` | Only used on dual-encoded collections. Weight on the description half for this query. Falls back to `Config.fusion_weight`. |
 
 Returns a list of [`FileHit`](#filehit), best file first. Returns an empty list
 if nothing has been finalized yet.
@@ -551,6 +559,14 @@ Embeddings:
 | `embed_device` | str or None | `None` | Device for the local model, for example `"cpu"` or `"cuda"`. Applies to sentence-transformers only. |
 | `embed_doc_prompt` | str or None | `None` | Optional prompt prefix applied to stored text. Applies to sentence-transformers only. |
 | `embed_query_prompt` | str or None | `None` | Optional prompt prefix applied to queries. Applies to sentence-transformers only. |
+
+Dual encoding:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `dual_encoding` | bool | `False` | Embed each chunk twice, once from its raw text and once from its description, and concatenate the two into one vector. Doubles the index dimension. Fixed when the collection is created. |
+| `fusion_weight` | float | `0.65` | How much the description half counts at search time, from 0 to 1; the raw text half gets `1 - fusion_weight`. Only used when `dual_encoding` is on, and can be overridden per query. |
+
 
 Summaries:
 
@@ -696,6 +712,39 @@ store = Bicardinal("./data", config=config)
 start adding files. `n_jobs` can be changed at any time, including per call to
 `search`, `search_in_file`, and `most_similar_files`.
 
+
+## Dual encoding
+
+By default each chunk is represented by a single vector built from its generated
+description. Dual encoding instead embeds the chunk twice, once from the raw text and
+once from the description, and concatenates the two into one vector. Search matches
+against both at once, so a query can be answered by the meaning of the summary and by
+the specifics of the original text, such as exact names, numbers, or rare terms that a
+summary may drop.
+
+Turn it on in `Config`:
+
+```python
+from bicardinal import Bicardinal, Config
+
+config = Config(dual_encoding=True, fusion_weight=0.65)
+store = Bicardinal("./data", config=config)
+```
+
+fusion_weight sets how much the description half counts at search time; the raw text
+half gets the rest. It is applied only to the query, so you can change it per search
+without rebuilding the index:
+
+```python
+col.search("exact invoice number", fusion_weight=0.2) # lean on raw text
+col.search("overall theme of the report", fusion_weight=0.9) # lean on the summary
+```
+
+dual_encoding doubles the vector dimension and is fixed when the collection is
+created, like shard_count, so reopen the collection with the same dual_encoding
+setting. fusion_weight is not stored and may differ from call to call.
+
+
 ## Behavior notes
 
 - Search matches the generated description of each chunk, while the returned
@@ -717,3 +766,7 @@ start adding files. `n_jobs` can be changed at any time, including per call to
   match.
 - The collection is stored on disk. Reopen it later with `store.open(name)`
   without adding the files again.
+- With `dual_encoding` on, search matches both the raw text and the description of
+  each chunk, and `fusion_weight` sets the balance at query time (overridable per
+  call). It doubles the index dimension and must be set the same way when you reopen
+  the collection.
