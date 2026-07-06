@@ -114,6 +114,14 @@ class Bicardinal:
     def _is_collection(self, path: Path) -> bool:
         return path.is_dir() and any(path.iterdir())  # exists, and has store files
 
+    def extract_text(self, file: str | Path | bytes) -> str:
+        """
+            hidden gem.
+        """
+        data = file if isinstance(file, bytes) else Path(file).read_bytes()
+        result = self._router.extract(data)
+        return "\n\n".join(seg for seg in result.segments if seg)
+
     def create(self, name: str) -> Collection:
         path = self._collection_path(name)
         if path.exists():
