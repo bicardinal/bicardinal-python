@@ -51,7 +51,7 @@ class Summarizer:
         model: str = "gpt-5.4-nano",
         *,
         max_concurrency: int = 8,
-        reasoning_effort: str = "low",
+        reasoning_effort: str = "medium",
         use_flex: bool = False,
         flex_max_retries: int = 3,
         flex_backoff: float = 0.5,

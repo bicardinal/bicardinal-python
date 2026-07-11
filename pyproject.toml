@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bicardinal"
-version = "0.0.4"
+version = "0.0.5"
 description = "Multimodal retrieval engine"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -31,7 +31,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "brinicle==0.1.0",
+    "brinicle>=0.1.1",
     "sentence-transformers>=3.0",
     "openai>=1.40",
     "mistralai>=1.0",

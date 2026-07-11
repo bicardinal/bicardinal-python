@@ -33,7 +33,7 @@ class Config:
     # summarizer
     summarizer_model: str = DEFAULT_SUMMARIZER_MODEL
     summarizer_max_concurrency: int = 8
-    summarizer_reasoning_effort: str = "low"
+    summarizer_reasoning_effort: str = "medium"
     summarizer_use_flex: bool = False # prefer OpenAI "flex"
     summarizer_flex_max_retries: int = 10 # transient-error retries at flex before standard
     summarizer_flex_backoff: float = 1.0 # initial backoff seconds; doubles each retry
