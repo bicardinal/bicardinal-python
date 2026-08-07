@@ -80,9 +80,15 @@ class PdfExtractor(Extractor):
                     },
                 )
                 pages = list(resp.pages)
-                # Mistral bills per page, per request; a split PDF is several
-                # requests whose page counts add up to the whole document.
-                usage.add_pages(self._model, pages=len(pages))
+                # Mistral bills per page and reports the count it billed on.
+                # A page that yields no markdown was still processed, so trust
+                # usage_info over the length of what came back.
+                processed = getattr(
+                    getattr(resp, "usage_info", None), "pages_processed", None
+                )
+                usage.add_pages(
+                    self._model, pages=len(pages) if processed is None else processed
+                )
                 segments.extend(page.markdown for page in pages)
         except Exception as e:
             raise ExtractionError(f"PDF OCR failed: {e}") from e

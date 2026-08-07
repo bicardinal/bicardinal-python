@@ -26,18 +26,22 @@ class _Details:
 
 
 class _RespUsage:
-    def __init__(self, i, o, cached=None, reasoning=None):
+    def __init__(self, i, o, cached=None, reasoning=None, written=None):
         self.input_tokens = i
         self.output_tokens = o
-        if cached is not None:
-            self.input_tokens_details = _Details(cached_tokens=cached)
+        if cached is not None or written is not None:
+            self.input_tokens_details = _Details(
+                cached_tokens=cached or 0, cache_write_tokens=written or 0
+            )
         if reasoning is not None:
             self.output_tokens_details = _Details(reasoning_tokens=reasoning)
 
 
 class _Resp:
-    def __init__(self, i, o, cached=None, reasoning=None, tier=None, model=None):
-        self.usage = _RespUsage(i, o, cached, reasoning)
+    def __init__(
+        self, i, o, cached=None, reasoning=None, tier=None, model=None, written=None
+    ):
+        self.usage = _RespUsage(i, o, cached, reasoning, written)
         if tier is not None:
             self.service_tier = tier
         if model is not None:
@@ -48,12 +52,15 @@ def _usd(usage: Usage) -> Decimal:
     return usage.cost().total_usd
 
 
-def _tokens(model, *, i, o, cached=0, tier=STANDARD, long=False, op="summarize"):
+def _tokens(
+    model, *, i, o, cached=0, written=0, tier=STANDARD, long=False, op="summarize"
+):
     usage = Usage()
     usage.add_tokens(
         TokenKey(operation=op, model=model, service_tier=tier, long_context=long),
         input_tokens=i,
         cached_input_tokens=cached,
+        cache_write_tokens=written,
         output_tokens=o,
     )
     return usage
@@ -136,6 +143,39 @@ def test_cached_tokens_are_a_subset_of_input_not_an_addition():
     tally = next(iter(usage.tokens.values()))
     assert tally.input_tokens == 1_000  # not 1_400
     assert tally.cached_input_tokens == 400
+
+
+def test_cache_writes_carry_the_1_25x_surcharge_on_gpt_5_6():
+    # A cold call writes the whole prompt to cache: 1M * $0.25, not $0.20.
+    cost = _usd(_tokens(LUNA, i=1_000_000, o=0, written=1_000_000))
+    assert cost == Decimal("0.25")
+    assert cost > _usd(_tokens(LUNA, i=1_000_000, o=0))  # dearer than plain input
+
+
+def test_reads_and_writes_are_disjoint_slices_of_input():
+    # 1M input = 600k read + 300k written + 100k neither.
+    cost = _usd(_tokens(LUNA, i=1_000_000, o=0, cached=600_000, written=300_000))
+    expected = (
+        Decimal("600000") * Decimal("0.02")
+        + Decimal("300000") * Decimal("0.25")
+        + Decimal("100000") * Decimal("0.20")
+    ) / Decimal(1_000_000)
+    assert cost == expected == Decimal("0.107")
+
+
+def test_cache_write_tokens_are_read_from_the_response():
+    usage = token_usage(_Resp(1_000, 0, written=980), operation="s", model=LUNA)
+    tally = next(iter(usage.tokens.values()))
+    assert tally.input_tokens == 1_000  # not 1_980
+    assert tally.cache_write_tokens == 980
+    assert usage.cache_write_tokens == 980
+
+
+def test_older_families_write_to_cache_for_free():
+    # Only gpt-5.6 and later charge for writes; gpt-5.4 bills them as input.
+    written = _tokens("gpt-5.4-nano", i=1_000_000, o=0, written=1_000_000)
+    plain = _tokens("gpt-5.4-nano", i=1_000_000, o=0)
+    assert _usd(written) == _usd(plain) == Decimal("0.20")
 
 
 def test_model_without_a_cache_discount_bills_cache_reads_as_input():
@@ -295,8 +335,31 @@ def test_published_long_context_rates_match_the_2x_1_5x_rule():
         assert rate.long.output == rate.short.output * Decimal("1.5"), (tier, model)
         if rate.short.cached_input is not None:
             assert rate.long.cached_input == rate.short.cached_input * 2, (tier, model)
+        if rate.short.cache_write is not None:
+            assert rate.long.cache_write == rate.short.cache_write * 2, (tier, model)
         checked += 1
     assert checked >= 6  # the models OpenAI publishes both columns for
+
+
+def test_cache_write_rates_are_1_25x_input():
+    from bicardinal.office.pricing import TOKEN_RATES
+
+    checked = 0
+    for (tier, model), rate in TOKEN_RATES.items():
+        for context in (rate.short, rate.long):
+            if context is None or context.cache_write is None:
+                continue
+            assert context.cache_write == context.input * Decimal("1.25"), (tier, model)
+            checked += 1
+    assert checked >= 6
+
+
+def test_only_the_gpt_5_6_family_charges_for_cache_writes():
+    from bicardinal.office.pricing import TOKEN_RATES
+
+    for (tier, model), rate in TOKEN_RATES.items():
+        charges = rate.short.cache_write is not None
+        assert charges == model.startswith("gpt-5.6-"), (tier, model)
 
 
 def test_cached_input_is_never_dearer_than_fresh_input():

@@ -63,26 +63,40 @@ class TokenRate:
     input: Decimal
     output: Decimal
     cached_input: Decimal | None = None  # None: no cache discount, bills as input
+    cache_write: Decimal | None = None  # None: no write surcharge, bills as input
 
     def scaled(self) -> "TokenRate":
         """The long-context twin of a short-context rate."""
+
+        def x2(value: Decimal | None) -> Decimal | None:
+            return None if value is None else value * _LONG_INPUT_MULTIPLIER
+
         return TokenRate(
             input=self.input * _LONG_INPUT_MULTIPLIER,
             output=self.output * _LONG_OUTPUT_MULTIPLIER,
-            cached_input=(
-                None
-                if self.cached_input is None
-                else self.cached_input * _LONG_INPUT_MULTIPLIER
-            ),
+            cached_input=x2(self.cached_input),
+            cache_write=x2(self.cache_write),
         )
 
-    def cost(self, *, input_tokens: int, cached_input_tokens: int, output_tokens: int) -> Decimal:
-        cached = min(cached_input_tokens, input_tokens)  # cached is a subset of input
-        fresh = input_tokens - cached
+    def cost(
+        self,
+        *,
+        input_tokens: int,
+        cached_input_tokens: int,
+        cache_write_tokens: int,
+        output_tokens: int,
+    ) -> Decimal:
+        # Reads and writes are disjoint slices of input_tokens, never additions
+        # to it: a token is served from cache, written to cache, or neither.
+        cached = min(cached_input_tokens, input_tokens)
+        written = min(cache_write_tokens, input_tokens - cached)
+        fresh = input_tokens - cached - written
         cached_rate = self.input if self.cached_input is None else self.cached_input
+        write_rate = self.input if self.cache_write is None else self.cache_write
         return (
             Decimal(fresh) * self.input
             + Decimal(cached) * cached_rate
+            + Decimal(written) * write_rate
             + Decimal(output_tokens) * self.output
         ) / _MILLION
 
@@ -100,11 +114,14 @@ class ModelRate:
         return self.long if self.long is not None else self.short.scaled()
 
 
-def _rate(inp: str, out: str, cached: str | None = None) -> TokenRate:
+def _rate(
+    inp: str, out: str, cached: str | None = None, write: str | None = None
+) -> TokenRate:
     return TokenRate(
         input=Decimal(inp),
         output=Decimal(out),
         cached_input=None if cached is None else Decimal(cached),
+        cache_write=None if write is None else Decimal(write),
     )
 
 
@@ -120,14 +137,18 @@ def _tiered(short: TokenRate, long: TokenRate) -> ModelRate:
 # --------------------------------------------------------------------------
 TOKEN_RATES: dict[tuple[str, str], ModelRate] = {
     # -- standard ----------------------------------------------------------
+    # The gpt-5.6 family is the first to charge for cache writes, at 1.25x the
+    # uncached input rate. Older families write to cache for free, which is
+    # what a `None` cache_write below means.
     (STANDARD, "gpt-5.6-sol"): _tiered(
-        _rate("5.00", "30.00", "0.50"), _rate("10.00", "45.00", "1.00")
+        _rate("5.00", "30.00", "0.50", "6.25"),
+        _rate("10.00", "45.00", "1.00", "12.50"),
     ),
     (STANDARD, "gpt-5.6-terra"): _tiered(
-        _rate("2.00", "12.00", "0.20"), _rate("4.00", "18.00", "0.40")
+        _rate("2.00", "12.00", "0.20", "2.50"), _rate("4.00", "18.00", "0.40", "5.00")
     ),
     (STANDARD, "gpt-5.6-luna"): _tiered(
-        _rate("0.20", "1.20", "0.02"), _rate("0.40", "1.80", "0.04")
+        _rate("0.20", "1.20", "0.02", "0.25"), _rate("0.40", "1.80", "0.04", "0.50")
     ),
     (STANDARD, "gpt-5.5"): _tiered(
         _rate("5.00", "30.00", "0.50"), _rate("10.00", "45.00", "1.00")
@@ -163,16 +184,16 @@ TOKEN_RATES: dict[tuple[str, str], ModelRate] = {
     # -- flex --------------------------------------------------------------
     # The flex table prints no long-context column; ModelRate derives one from
     # the 2x/1.5x rule so a >272K flex call is never under-counted.
-    (FLEX, "gpt-5.6-sol"): ModelRate(_rate("2.50", "15.00", "0.25")),
-    (FLEX, "gpt-5.6-terra"): ModelRate(_rate("1.00", "6.00", "0.10")),
-    (FLEX, "gpt-5.6-luna"): ModelRate(_rate("0.10", "0.60", "0.01")),
+    (FLEX, "gpt-5.6-sol"): ModelRate(_rate("2.50", "15.00", "0.25", "3.125")),
+    (FLEX, "gpt-5.6-terra"): ModelRate(_rate("1.00", "6.00", "0.10", "1.25")),
+    (FLEX, "gpt-5.6-luna"): ModelRate(_rate("0.10", "0.60", "0.01", "0.125")),
     (FLEX, "gpt-5.4"): ModelRate(_rate("1.25", "7.50", "0.13")),
     (FLEX, "gpt-5.4-mini"): ModelRate(_rate("0.375", "2.25", "0.0375")),
     (FLEX, "gpt-5.4-nano"): ModelRate(_rate("0.10", "0.625", "0.01")),
     (FLEX, "o3"): ModelRate(_rate("1.00", "4.00", "0.25")),
     (FLEX, "o4-mini"): ModelRate(_rate("0.55", "2.20", "0.138")),
     # -- batch -------------------------------------------------------------
-    (BATCH, "gpt-5.6-luna"): ModelRate(_rate("0.10", "0.60", "0.01")),
+    (BATCH, "gpt-5.6-luna"): ModelRate(_rate("0.10", "0.60", "0.01", "0.125")),
 }
 
 # USD per minute of audio.
@@ -281,9 +302,11 @@ def _price_tokens(key: TokenKey, tally, cost: Cost) -> None:
     usd = rate.at(long_context=key.long_context).cost(
         input_tokens=tally.input_tokens,
         cached_input_tokens=tally.cached_input_tokens,
+        cache_write_tokens=tally.cache_write_tokens,
         output_tokens=tally.output_tokens,
     )
     cached = min(tally.cached_input_tokens, tally.input_tokens)
+    written = min(tally.cache_write_tokens, tally.input_tokens - cached)
     cost.lines.append(
         CostLine(
             kind="tokens",
@@ -291,8 +314,8 @@ def _price_tokens(key: TokenKey, tally, cost: Cost) -> None:
             model=key.model,
             usd=usd,
             detail=(
-                f"{tally.input_tokens - cached} in + {cached} cached "
-                f"+ {tally.output_tokens} out"
+                f"{tally.input_tokens - cached - written} in + {cached} cached "
+                f"+ {written} written + {tally.output_tokens} out"
             ),
             service_tier=key.service_tier,
             long_context=key.long_context,
@@ -375,9 +398,11 @@ def token_usage(
     the request, and whether this single request crossed the long-context line.
     """
     u = getattr(response, "usage", None)
+    details = getattr(u, "input_tokens_details", None)
     input_tokens = _int(getattr(u, "input_tokens", 0))
     output_tokens = _int(getattr(u, "output_tokens", 0))
-    cached = _int(getattr(getattr(u, "input_tokens_details", None), "cached_tokens", 0))
+    cached = _int(getattr(details, "cached_tokens", 0))
+    written = _int(getattr(details, "cache_write_tokens", 0))
     reasoning = _int(
         getattr(getattr(u, "output_tokens_details", None), "reasoning_tokens", 0)
     )
@@ -396,6 +421,7 @@ def token_usage(
         ),
         input_tokens=input_tokens,
         cached_input_tokens=min(cached, input_tokens),
+        cache_write_tokens=min(written, input_tokens),
         output_tokens=output_tokens,
         reasoning_tokens=reasoning,
     )

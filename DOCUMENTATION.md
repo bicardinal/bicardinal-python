@@ -294,9 +294,14 @@ small chunks that add up to 500,000 tokens are a hundred short-context calls,
 not one long-context call, and pricing them as a total would roughly double the
 input charge.
 
-**Cache reads.** Cached input tokens are billed at up to 90% off. They are a
-subset of the input count, not an addition to it, and are tracked separately so
-the discount is applied instead of being charged at the full rate.
+**Cache reads and cache writes.** Cached input tokens are billed at up to 90%
+off. Cache *writes* go the other way: on the gpt-5.6 family they cost 1.25x the
+uncached input rate, where earlier families wrote to cache for free. Reads and
+writes are disjoint slices of the input count, never additions to it, so a
+request's input is billed as reads at the cached rate, writes at the write
+rate, and whatever is left at the plain input rate. A cold call on a cacheable
+prompt therefore costs *more* than an uncached one, and the warm call that
+follows costs far less.
 
 **Service tier.** Flex costs about half of standard. Because
 `summarizer_use_flex` falls back to standard when flex is failing, one ingestion
@@ -762,6 +767,7 @@ Flat totals are available for reporting:
 | `image_input_tokens` | int | Tokens sent to the image model. |
 | `image_output_tokens` | int | Tokens returned by the image model. |
 | `cached_input_tokens` | int | Input tokens served from cache, across all models. A subset of the input totals, not an addition to them. |
+| `cache_write_tokens` | int | Input tokens written to cache. Also a subset of the input totals. Billed at 1.25x the input rate on the gpt-5.6 family, and free on earlier ones. |
 | `reasoning_tokens` | int | Reasoning tokens, across all models. Already counted inside the output totals. |
 | `embedding_tokens` | int | Tokens sent to a hosted embedding model. |
 | `audio_seconds` | float | Seconds of audio transcribed. |
@@ -769,7 +775,16 @@ Flat totals are available for reporting:
 
 `TokenKey` carries `operation`, `model`, `service_tier` and `long_context`.
 `TokenTally` carries `requests`, `input_tokens`, `cached_input_tokens`,
-`output_tokens` and `reasoning_tokens`.
+`cache_write_tokens`, `output_tokens` and `reasoning_tokens`.
+
+The rates are checked against the live APIs by `tests/test_live.py`, which is
+skipped unless you opt in with both provider keys and `BICARDINAL_LIVE_TESTS=1`.
+Its payloads are deliberately tiny; a full run bills well under a cent, most of
+it the single OCR page.
+
+```bash
+BICARDINAL_LIVE_TESTS=1 pytest tests/test_live.py
+```
 
 #### Cost
 
