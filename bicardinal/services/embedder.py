@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import threading
 from abc import ABC
 from abc import abstractmethod
 
 import numpy as np
+
+from ..office.pricing import embedding_usage
+from ..office.types import Usage
 
 
 def _l2_normalize(vectors: np.ndarray) -> np.ndarray:
@@ -29,6 +33,13 @@ class Embedder(ABC):
 
     @abstractmethod
     def embed_query(self, text: str) -> np.ndarray: ...
+
+    def pop_usage(self) -> Usage:
+        """Take the usage accrued since the last call and reset the counter.
+
+        Local backends run on your own hardware and report nothing.
+        """
+        return Usage()
 
 
 class SentenceTransformerEmbedder(Embedder):
@@ -104,6 +115,13 @@ class VoyageAIEmbedder(Embedder):
         self._batch_size = max(1, min(batch_size, self._MAX_BATCH))
         self._normalize = normalize
         self.dim = output_dimension
+        self._usage = Usage()
+        self._usage_lock = threading.Lock()  # one embedder is shared by collections
+
+    def pop_usage(self) -> Usage:
+        with self._usage_lock:
+            usage, self._usage = self._usage, Usage()
+        return usage
 
     def _embed(self, texts: list[str], input_type: str) -> np.ndarray:
         rows: list[list[float]] = []
@@ -118,6 +136,14 @@ class VoyageAIEmbedder(Embedder):
                 truncation=True,  # silently trim over-length inputs
             )
             rows.extend(result.embeddings)
+            # Voyage bills per token; truncation means the request's own count
+            # is the billed one, not whatever we sent.
+            with self._usage_lock:
+                self._usage = self._usage + embedding_usage(
+                    model=self._model,
+                    operation=f"embed_{input_type}",
+                    tokens=int(getattr(result, "total_tokens", 0) or 0),
+                )
         vectors = np.asarray(rows, dtype=np.float32)
         return _l2_normalize(vectors) if self._normalize else vectors
 

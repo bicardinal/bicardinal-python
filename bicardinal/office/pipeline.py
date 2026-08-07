@@ -84,6 +84,7 @@ def build_chunks(
             vectors = desc_vecs
     else:
         vectors = np.empty((0, index_dim), dtype=np.float32)
+    usage = usage + embedder.pop_usage()  # hosted embedders bill per token
     progress("embed", len(raw_texts), len(raw_texts))
 
     chunk_ids = [chunk_id_for(filename, i, raw_texts[i]) for i in range(len(raw_texts))]

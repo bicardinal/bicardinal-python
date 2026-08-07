@@ -13,8 +13,10 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 
-from openai import OpenAI
-
+from ..office.config import DEFAULT_SUMMARIZER_MODEL
+from ..office.pricing import FLEX
+from ..office.pricing import STANDARD
+from ..office.pricing import token_usage
 from ..office.types import Usage
 
 _FLEX_RETRYABLE = (
@@ -48,7 +50,7 @@ class Summarizer:
     def __init__(
         self,
         client: OpenAI,
-        model: str = "gpt-5.4-nano",
+        model: str = DEFAULT_SUMMARIZER_MODEL,
         *,
         max_concurrency: int = 8,
         reasoning_effort: str = "medium",
@@ -81,9 +83,13 @@ class Summarizer:
             **kwargs,
         )
         description = resp.output_text.strip()
-        usage = Usage(
-            summarizer_input_tokens=resp.usage.input_tokens,
-            summarizer_output_tokens=resp.usage.output_tokens,
+        # Priced per call: the flex path below can fall back to standard
+        # mid-run, so each response carries its own tier and context class.
+        usage = token_usage(
+            resp,
+            operation="summarize",
+            model=self._model,
+            service_tier=service_tier or STANDARD,
         )
         return description, usage
 
@@ -93,7 +99,7 @@ class Summarizer:
         for attempt in range(self._flex_max_retries + 1):
             try:
                 return self._call(
-                    text, service_tier="flex", timeout=_FLEX_TIMEOUT_SECONDS
+                    text, service_tier=FLEX, timeout=_FLEX_TIMEOUT_SECONDS
                 )
             except _FLEX_RETRYABLE as e:
                 last_exc = e

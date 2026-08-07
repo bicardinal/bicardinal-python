@@ -5,9 +5,10 @@ import json
 
 from openai import OpenAI
 
+from ..office.config import DEFAULT_IMAGE_MODEL
 from ..office.exceptions import ExtractionError
+from ..office.pricing import token_usage
 from ..office.types import Modality
-from ..office.types import Usage
 from .base import Extractor
 from .base import ExtractResult
 
@@ -44,7 +45,7 @@ class ImageExtractor(Extractor):
     modality = Modality.IMAGE
 
     def __init__(
-        self, client: OpenAI, model: str = "gpt-5.4", *, detail: str = "auto"
+        self, client: OpenAI, model: str = DEFAULT_IMAGE_MODEL, *, detail: str = "auto"
     ) -> None:
         self._client = client
         self._model = model
@@ -82,10 +83,9 @@ class ImageExtractor(Extractor):
             transcription = parsed["transcription"].strip()
         except Exception as e:
             raise ExtractionError(f"image extraction failed: {e}") from e
-        usage = Usage(
-            image_input_tokens=resp.usage.input_tokens,
-            image_output_tokens=resp.usage.output_tokens,
-        )
+        # Vision input arrives as image tokens already counted in input_tokens,
+        # so the model's normal text rate prices the call.
+        usage = token_usage(resp, operation="image", model=self._model)
         return ExtractResult(
             segments=[transcription],
             modality=self.modality,

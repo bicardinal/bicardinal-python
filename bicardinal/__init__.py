@@ -24,6 +24,11 @@ from .office.exceptions import DuplicateDocument
 from .office.exceptions import EmptyFile
 from .office.exceptions import ExtractionError
 from .office.exceptions import UnsupportedFileType
+from .office.pricing import LONG_CONTEXT_INPUT_THRESHOLD
+from .office.pricing import Cost
+from .office.pricing import CostLine
+from .office.pricing import UnknownRate
+from .office.pricing import price
 from .office.types import AddResult
 from .office.types import FileHit
 from .office.types import Modality
@@ -166,6 +171,11 @@ __all__ = [
     "FileHit",
     "Chunk",
     "Usage",
+    "Cost",
+    "CostLine",
+    "price",
+    "UnknownRate",
+    "LONG_CONTEXT_INPUT_THRESHOLD",
     "Modality",
     "BicardinalError",
     "DuplicateDocument",

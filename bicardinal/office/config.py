@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 DEFAULT_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-DEFAULT_SUMMARIZER_MODEL = "gpt-5.4-nano"
+# luna is the cheap tier of the gpt-5.6 family: $0.20/$1.20 per 1M tokens
+# short-context, and it takes images, so it is the default for both jobs.
+DEFAULT_SUMMARIZER_MODEL = "gpt-5.6-luna"
+DEFAULT_IMAGE_MODEL = "gpt-5.6-luna"
+DEFAULT_TRANSCRIBE_MODEL = "whisper-1"
+DEFAULT_OCR_MODEL = "mistral-ocr-latest"
 
 
 @dataclass
@@ -13,13 +18,13 @@ class Config:
     overlap: float = 0.1
 
     # ocr
-    ocr_model: str = "mistral-ocr-latest"
+    ocr_model: str = DEFAULT_OCR_MODEL
 
     # image
-    image_model: str = "gpt-5.4"
+    image_model: str = DEFAULT_IMAGE_MODEL
 
     # transcribe
-    transcribe_model: str = "whisper-1"
+    transcribe_model: str = DEFAULT_TRANSCRIBE_MODEL
 
     # embedder
     embed_provider: str = "sentence-transformers"  # or "voyage"

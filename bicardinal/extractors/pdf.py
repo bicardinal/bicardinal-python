@@ -7,6 +7,7 @@ from mistralai.client import Mistral
 from pypdf import PdfReader
 from pypdf import PdfWriter
 
+from ..office.config import DEFAULT_OCR_MODEL
 from ..office.exceptions import ExtractionError
 from ..office.types import Modality
 from ..office.types import Usage
@@ -53,7 +54,7 @@ class PdfExtractor(Extractor):
     def __init__(
         self,
         client: Mistral,
-        model: str = "mistral-ocr-latest",
+        model: str = DEFAULT_OCR_MODEL,
         *,
         max_pages: int = 1000,
         max_bytes: int = 50 * 1024 * 1024,
@@ -65,6 +66,7 @@ class PdfExtractor(Extractor):
 
     def extract(self, data: bytes, *, filename: str | None = None) -> ExtractResult:
         segments: list[str] = []
+        usage = Usage()
         try:
             for chunk in split_pdf(
                 data, max_pages=self._max_pages, max_bytes=self._max_bytes
@@ -77,8 +79,11 @@ class PdfExtractor(Extractor):
                         "document_url": f"data:application/pdf;base64,{b64}",
                     },
                 )
-                segments.extend(page.markdown for page in resp.pages)
+                pages = list(resp.pages)
+                # Mistral bills per page, per request; a split PDF is several
+                # requests whose page counts add up to the whole document.
+                usage.add_pages(self._model, pages=len(pages))
+                segments.extend(page.markdown for page in pages)
         except Exception as e:
             raise ExtractionError(f"PDF OCR failed: {e}") from e
-        usage = Usage(ocr_pages=len(segments))
         return ExtractResult(segments=segments, modality=self.modality, usage=usage)

@@ -14,6 +14,7 @@ from .office.types import AddResult
 from .office.types import FileHit
 from .office.types import SearchHit
 from .office.types import Chunk
+from .office.types import Usage
 from .services.embedder import Embedder
 from .services.embedder import fuse_query
 from .services.summarizer import Summarizer
@@ -70,6 +71,7 @@ class Collection:
         )
         self._catalog = Catalog(self._path / "catalog", shard_count=config.shard_count)
         self._failed: list[_FailedDoc] = []  # write failures, repaired at finalize
+        self._usage = Usage()  # everything billed since this handle was opened
 
     def _write_document(
         self, filename: str, out: IngestOutput, *, upsert: bool = False
@@ -103,8 +105,13 @@ class Collection:
             )
         return out
 
+    def usage(self) -> Usage:
+        """Everything billed through this handle: ingestion and queries both."""
+        return self._usage
+
     def _embed_query(self, query: str, fusion_weight: float | None) -> np.ndarray:
         qvec = self._embedder.embed_query(query)
+        self._usage = self._usage + self._embedder.pop_usage()  # queries bill too
         if not self._dual_encoding:
             return qvec
         # if not (0 >= fusion_weight <= 1.0):
@@ -134,6 +141,7 @@ class Collection:
             on_progress=on_progress,
         )
         errors = list(out.errors)
+        self._usage = self._usage + out.usage
         try:
             self._write_document(filename, out)
             if on_progress is not None:

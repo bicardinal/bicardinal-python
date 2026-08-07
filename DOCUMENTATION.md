@@ -248,6 +248,74 @@ print("summary tokens in/out:",
       result.usage.summarizer_output_tokens)
 ```
 
+### Work out what an operation cost
+
+Every `Usage` prices itself. `cost()` returns an itemized `Cost` whose amounts
+are `Decimal`, so the numbers are exact rather than floating point.
+
+```python
+result = col.ingest("report.pdf", Path("report.pdf").read_bytes())
+cost = result.usage.cost()
+
+print(cost)                    # itemized, one line per rate
+print(cost.total_usd)          # Decimal('0.0184')
+print(cost.by("operation"))    # {'ocr': Decimal('0.048'), 'summarize': ...}
+```
+
+`Collection.usage()` accumulates everything billed through the handle, queries
+included, so you can price a whole session:
+
+```python
+col.search("renewal date")
+print(col.usage().cost().total_usd)   # ingestion plus that query
+```
+
+A model bicardinal has no published rate for is never counted as free. It lands
+in `cost.unpriced`, and `cost.is_complete` goes false:
+
+```python
+cost = result.usage.cost()
+if not cost.is_complete:
+    print("no rate for:", cost.unpriced)   # total_usd is an undercount
+
+result.usage.cost(strict=True)             # or raise UnknownRate instead
+```
+
+### What the rates account for
+
+Costing is done per API call, not over totals, because four things change the
+rate and only the individual call knows them.
+
+**Short and long context.** A request whose *input* passes
+`LONG_CONTEXT_INPUT_THRESHOLD` (272,000 tokens) is billed at the model's
+long-context rate: 2x input and 1.5x output, applied to the whole request rather
+than only the tokens above the line. This is decided per request. A hundred
+small chunks that add up to 500,000 tokens are a hundred short-context calls,
+not one long-context call, and pricing them as a total would roughly double the
+input charge.
+
+**Cache reads.** Cached input tokens are billed at up to 90% off. They are a
+subset of the input count, not an addition to it, and are tracked separately so
+the discount is applied instead of being charged at the full rate.
+
+**Service tier.** Flex costs about half of standard. Because
+`summarizer_use_flex` falls back to standard when flex is failing, one ingestion
+can span both tiers; each call is bucketed under the tier that actually served
+it, as reported by the API.
+
+**Model.** The rate follows the model that ran the call, including when the API
+resolves an alias to a dated snapshot, which prices as its base model.
+
+Rates live in `bicardinal/office/pricing.py`, transcribed from the published
+price lists. To override one, assign into the tables:
+
+```python
+from decimal import Decimal
+from bicardinal.office.pricing import OCR_RATES
+
+OCR_RATES["mistral-ocr-latest"] = Decimal("2") / 1000   # your negotiated rate
+```
+
 ### Update a document
 
 There is no in place update. Delete the file, then add the new version.
@@ -292,6 +360,7 @@ Public names are importable from the top level package:
 from bicardinal import (
     Bicardinal, Collection, Config, CollectionStatus,
     AddResult, SearchHit, FileHit, Chunk, Usage, Modality,
+    Cost, CostLine, price, UnknownRate, LONG_CONTEXT_INPUT_THRESHOLD,
     BicardinalError, DuplicateDocument, DocumentNotFound,
     CollectionExists, CollectionNotFound, UnsupportedFileType,
     EmptyFile, ExtractionError,
@@ -497,6 +566,16 @@ status() -> CollectionStatus
 Return counts and file names for the collection. See
 [`CollectionStatus`](#collectionstatus).
 
+#### usage
+
+```python
+usage() -> Usage
+```
+
+Everything billed through this handle since it was opened: ingestion and
+queries both. Call `.cost()` on it to price a session. See [`Usage`](#usage).
+Counts start over when the collection is reopened.
+
 #### delete
 
 ```python
@@ -545,7 +624,7 @@ Extraction models:
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `ocr_model` | str | `"mistral-ocr-latest"` | Model used to read PDFs. |
-| `image_model` | str | `"gpt-5.4"` | Vision model used to describe and transcribe images. |
+| `image_model` | str | `"gpt-5.6-luna"` | Vision model used to describe and transcribe images. |
 | `transcribe_model` | str | `"whisper-1"` | Model used to transcribe audio. |
 
 Embeddings:
@@ -572,9 +651,9 @@ Summaries:
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `summarizer_model` | str | `"gpt-5.4-nano"` | Model used to describe each chunk. |
+| `summarizer_model` | str | `"gpt-5.6-luna"` | Model used to describe each chunk. |
 | `summarizer_max_concurrency` | int | `8` | How many descriptions are requested in parallel. |
-| `summarizer_reasoning_effort` | str | `"minimal"` | Reasoning effort passed to the summarizer model. |
+| `summarizer_reasoning_effort` | str | `"medium"` | Reasoning effort passed to the summarizer model. Reasoning tokens are billed as output, so lowering this lowers the cost per chunk. |
 
 Index:
 
@@ -656,17 +735,60 @@ Returned by `status`.
 
 #### Usage
 
-Resource counts for an ingestion. Two `Usage` values can be added together with
-`+`.
+Billable work, recorded finely enough to price exactly. Two `Usage` values can
+be added together with `+`.
+
+Tokens are not kept as one running total. They are bucketed by
+`(operation, model, service tier, context class)`, because each of those four
+changes the rate. Call `usage.cost()` to price the buckets.
 
 | Field | Type | Description |
+| --- | --- | --- |
+| `tokens` | dict | `TokenKey` to `TokenTally`. One bucket per distinct rate. |
+| `audio` | dict | Transcription model to `AudioTally`. |
+| `ocr` | dict | OCR model to `PageTally`. |
+| `embeddings` | dict | `(model, operation)` to `EmbeddingTally`. Empty for local embedders, which are not billed. |
+
+| Method | Returns | Description |
+| --- | --- | --- |
+| `cost(strict=False)` | Cost | Price this usage. With `strict=True`, raises `UnknownRate` instead of collecting unpriced items. |
+
+Flat totals are available for reporting:
+
+| Property | Type | Description |
 | --- | --- | --- |
 | `summarizer_input_tokens` | int | Tokens sent to the summarizer. |
 | `summarizer_output_tokens` | int | Tokens returned by the summarizer. |
 | `image_input_tokens` | int | Tokens sent to the image model. |
 | `image_output_tokens` | int | Tokens returned by the image model. |
+| `cached_input_tokens` | int | Input tokens served from cache, across all models. A subset of the input totals, not an addition to them. |
+| `reasoning_tokens` | int | Reasoning tokens, across all models. Already counted inside the output totals. |
+| `embedding_tokens` | int | Tokens sent to a hosted embedding model. |
 | `audio_seconds` | float | Seconds of audio transcribed. |
 | `ocr_pages` | int | Pages read by OCR. |
+
+`TokenKey` carries `operation`, `model`, `service_tier` and `long_context`.
+`TokenTally` carries `requests`, `input_tokens`, `cached_input_tokens`,
+`output_tokens` and `reasoning_tokens`.
+
+#### Cost
+
+An itemized price, returned by `usage.cost()` or `price(usage)`. Every amount is
+a `Decimal`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `lines` | list of CostLine | One line per priced bucket. |
+| `unpriced` | list of str | Anything used that had no published rate. |
+
+| Property or method | Returns | Description |
+| --- | --- | --- |
+| `total_usd` | Decimal | Sum of every line. |
+| `is_complete` | bool | False when `unpriced` is non-empty, meaning the total is an undercount. |
+| `by(field)` | dict | Totals grouped by any `CostLine` field, for example `by("operation")` or `by("model")`. |
+
+`CostLine` carries `kind`, `operation`, `model`, `usd`, `detail`,
+`service_tier` and `long_context`.
 
 #### Modality
 
